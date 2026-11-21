@@ -37,3 +37,11 @@ fn no_wrap_gives_the_count_of_the_lines() {
     let textarea = TextArea::from(["one two three", "four"]);
     assert_eq!(textarea.wrapped_row_count(5), 2);
 }
+
+#[test]
+fn count_uses_the_width_function() {
+    let mut textarea = wrapped(&["xxxxxxxxxx"]);
+    assert_eq!(textarea.wrapped_row_count(10), 1);
+    textarea.set_grapheme_width(|_| 2);
+    assert_eq!(textarea.wrapped_row_count(10), 2);
+}

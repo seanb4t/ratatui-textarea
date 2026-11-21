@@ -2447,7 +2447,15 @@ impl<'a> TextArea<'a> {
         }
         let line_number_len = self.line_number_style.map(|_| num_digits(self.lines.len()));
         let width = effective_wrap_width(width, line_number_len);
-        wrapped_rows(&self.lines, self.wrap_mode, width, self.tab_len, self.mask).len()
+        wrapped_rows(
+            &self.lines,
+            self.wrap_mode,
+            width,
+            self.tab_len,
+            self.mask,
+            self.grapheme_width.as_ref(),
+        )
+        .len()
     }
 
     /// Get the current soft-wrap mode.

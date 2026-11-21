@@ -1,6 +1,6 @@
 use crate::cursor::{DataCursor, ScreenCursor};
 use crate::textarea::TextArea;
-use crate::util::{char_width, num_digits};
+use crate::util::{GraphemeWidth, char_widths, mask_width, num_digits};
 use crate::wrap::{WrapMode, WrappedLine, effective_wrap_width, wrapped_rows};
 
 #[derive(Debug, Clone, Copy)]
@@ -21,53 +21,48 @@ fn is_pure_ascii(line: &str) -> bool {
     line.is_ascii() && !line.contains('\t')
 }
 
-fn char_display_width(c: char, col: usize, tab_len: u8, mask: Option<char>) -> usize {
+// The tab length, the mask char and the width function of a text area.
+type Metrics<'a> = (u8, Option<char>, Option<&'a GraphemeWidth>);
+
+// The width of the char `c` at the column `col`. `cells` is its width from `char_widths`.
+fn char_display_width(c: char, cells: usize, col: usize, metrics: Metrics<'_>) -> usize {
+    let (tab_len, mask, grapheme_width) = metrics;
     // A masked line is drawn as one mask character per char, so each char is as wide as the mask.
     if let Some(mask) = mask {
-        char_width(mask)
+        mask_width(mask, grapheme_width)
     } else if c == '\t' {
         let tab = tab_len.max(1) as usize;
         let pad = tab - (col % tab);
         pad.max(1)
     } else {
-        char_width(c)
+        cells
     }
 }
 
-fn display_width(text: &str, tab_len: u8, mask: Option<char>) -> usize {
+fn display_width(text: &str, metrics: Metrics<'_>) -> usize {
     let mut col = 0usize;
-    for c in text.chars() {
-        col += char_display_width(c, col, tab_len, mask);
+    for (c, cells) in char_widths(text, metrics.2) {
+        col += char_display_width(c, cells, col, metrics);
     }
     col
 }
 
-fn screen_col_for_char_offset(
-    text: &str,
-    char_offset: usize,
-    tab_len: u8,
-    mask: Option<char>,
-) -> usize {
+fn screen_col_for_char_offset(text: &str, char_offset: usize, metrics: Metrics<'_>) -> usize {
     let mut col = 0usize;
-    for c in text.chars().take(char_offset) {
-        col += char_display_width(c, col, tab_len, mask);
+    for (c, cells) in char_widths(text, metrics.2).take(char_offset) {
+        col += char_display_width(c, cells, col, metrics);
     }
     col
 }
 
-fn char_offset_for_screen_col(
-    text: &str,
-    screen_col: usize,
-    tab_len: u8,
-    mask: Option<char>,
-) -> usize {
+fn char_offset_for_screen_col(text: &str, screen_col: usize, metrics: Metrics<'_>) -> usize {
     let mut col = 0usize;
     let mut chars = 0usize;
-    for c in text.chars() {
+    for (c, cells) in char_widths(text, metrics.2) {
         if col >= screen_col {
             break;
         }
-        let width = char_display_width(c, col, tab_len, mask);
+        let width = char_display_width(c, cells, col, metrics);
         if col + width > screen_col {
             break;
         }
@@ -78,6 +73,14 @@ fn char_offset_for_screen_col(
 }
 
 impl TextArea<'_> {
+    fn metrics(&self) -> Metrics<'_> {
+        (
+            self.tab_length(),
+            self.mask_char(),
+            self.grapheme_width.as_ref(),
+        )
+    }
+
     fn fallback_rows(&self) -> Vec<WrappedLine> {
         self.lines
             .iter()
@@ -116,6 +119,7 @@ impl TextArea<'_> {
                 width,
                 self.tab_length(),
                 self.mask_char(),
+                self.grapheme_width.as_ref(),
             ),
             None => self.fallback_rows(),
         };
@@ -137,19 +141,15 @@ impl TextArea<'_> {
 
             let fragment = &self.lines[wrapped.row][wrapped.start_byte..wrapped.end_byte];
             let char_count = wrapped.end_col.saturating_sub(wrapped.start_col);
+            let metrics = self.metrics();
             let cursor_max_col = if wrapped.last_in_row {
-                display_width(fragment, self.tab_length(), self.mask_char())
+                display_width(fragment, metrics)
             } else {
-                screen_col_for_char_offset(
-                    fragment,
-                    char_count.saturating_sub(1),
-                    self.tab_length(),
-                    self.mask_char(),
-                )
+                screen_col_for_char_offset(fragment, char_count.saturating_sub(1), metrics)
             };
             screen_lines.push(ScreenLine {
                 wrapped,
-                screen_width: display_width(fragment, self.tab_length(), self.mask_char()),
+                screen_width: display_width(fragment, metrics),
                 cursor_max_col,
             });
         }
@@ -182,8 +182,7 @@ impl TextArea<'_> {
         let line = self.screen_line(screen.row);
         let fragment =
             &self.lines[line.wrapped.row][line.wrapped.start_byte..line.wrapped.end_byte];
-        let char_offset =
-            char_offset_for_screen_col(fragment, screen.col, self.tab_length(), self.mask_char());
+        let char_offset = char_offset_for_screen_col(fragment, screen.col, self.metrics());
         DataCursor(line.wrapped.row, line.wrapped.start_col + char_offset)
     }
 
@@ -210,8 +209,7 @@ impl TextArea<'_> {
         let line = screen_lines[screen_idx];
         let fragment = &self.lines[array.0][line.wrapped.start_byte..line.wrapped.end_byte];
         let char_offset = array.1.saturating_sub(line.wrapped.start_col);
-        let col =
-            screen_col_for_char_offset(fragment, char_offset, self.tab_length(), self.mask_char());
+        let col = screen_col_for_char_offset(fragment, char_offset, self.metrics());
 
         ScreenCursor {
             row: screen_idx,

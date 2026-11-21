@@ -1,14 +1,16 @@
 use crate::textarea::TextArea;
-use crate::util::{char_width, num_digits};
+use crate::util::{GraphemeWidth, char_width, num_digits};
 use crate::wrap::WrapMode;
 #[cfg(feature = "portable-atomic")]
 use portable_atomic::{AtomicU64, Ordering};
-use ratatui_core::buffer::{Buffer, CellWidth as _};
+use ratatui_core::buffer::{Buffer, CellDiffOption, CellWidth as _};
 use ratatui_core::layout::{Alignment, Rect};
+use ratatui_core::style::Style;
 use ratatui_core::text::{Line, Span, Text};
 use ratatui_core::widgets::Widget;
 use ratatui_widgets::paragraph::Paragraph;
 use std::cmp;
+use std::num::NonZeroU16;
 #[cfg(not(feature = "portable-atomic"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -95,23 +97,96 @@ fn next_scroll_top(prev_top: u16, cursor: u16, len: u16) -> u16 {
 
 // The graphemes of a span that ratatui draws, with their widths in cells. Ratatui draws no
 // control chars, so they take no columns here either.
-fn drawn_graphemes<'s>(span: &'s Span<'_>) -> impl Iterator<Item = (&'s str, usize)> {
+fn drawn_graphemes<'s>(
+    span: &'s Span<'_>,
+    grapheme_width: Option<&'s GraphemeWidth>,
+) -> impl Iterator<Item = (&'s str, usize)> {
     span.content
         .graphemes(true)
         .filter(|g| !g.contains(char::is_control))
-        .map(|g| (g, g.cell_width().into()))
+        .map(move |g| match grapheme_width {
+            Some(width) => (g, width.of(g)),
+            None => (g, g.cell_width().into()),
+        })
+}
+
+// Draws `text` in `area` with the widths of `grapheme_width`. `Paragraph` gives each grapheme
+// the width that ratatui computes, so it cannot draw a grapheme in another width. Each cell
+// gets its width as a forced width, so the diff of the buffer moves the terminal cursor by the
+// same count of cells. A grapheme that does not fit in the rest of its row is not drawn, so no
+// cell outside `area` changes.
+fn draw_text(
+    text: &Text<'_>,
+    area: Rect,
+    buf: &mut Buffer,
+    grapheme_width: &GraphemeWidth,
+    alignment: Alignment,
+) {
+    let area = area.intersection(buf.area);
+    buf.set_style(area, text.style);
+    for (line, y) in text.lines.iter().zip(area.y..area.bottom()) {
+        // A grapheme can lie in two spans, for example when the cursor span holds its first
+        // char. So the graphemes come from the whole line, and the style from the span that
+        // holds the start of the grapheme.
+        let content: String = line.spans.iter().map(|span| &*span.content).collect();
+        let mut styles = Vec::with_capacity(line.spans.len());
+        let mut end = 0;
+        for span in &line.spans {
+            end += span.content.len();
+            styles.push((end, span.style));
+        }
+        let style_at = |offset: usize| {
+            let span = styles.iter().find(|(end, _)| offset < *end);
+            let span = span.map_or(Style::default(), |(_, style)| *style);
+            text.style.patch(line.style).patch(span)
+        };
+        let graphemes = || {
+            content
+                .grapheme_indices(true)
+                .map(|(offset, g)| (offset, g, grapheme_width.of(g)))
+                .filter(|(_, _, cells)| *cells > 0)
+        };
+        let line_width: usize = graphemes().map(|(_, _, cells)| cells).sum();
+        let free = usize::from(area.width).saturating_sub(line_width);
+        let mut col = match line.alignment.unwrap_or(alignment) {
+            Alignment::Left => 0,
+            Alignment::Center => free / 2,
+            Alignment::Right => free,
+        };
+        for (offset, grapheme, cells) in graphemes() {
+            if col + cells > usize::from(area.width) {
+                break;
+            }
+            // `col + cells` fits in the width of the area, which is a `u16`.
+            let x = area.x + col as u16;
+            let cell = &mut buf[(x, y)];
+            cell.set_symbol(grapheme).set_style(style_at(offset));
+            if let Some(forced) = NonZeroU16::new(cells as u16) {
+                cell.set_diff_option(CellDiffOption::ForcedWidth(forced));
+            }
+            for hidden in 1..cells as u16 {
+                buf[(x + hidden, y)].reset();
+            }
+            col += cells;
+        }
+    }
 }
 
 // Cut the columns `left..left + width` out of a line. A wide char cut by either edge
 // becomes blank cells in its own style, so the other cells keep their columns and a
 // cursor on that char is still drawn.
-fn clip_line(line: Line<'_>, left: usize, width: usize) -> Line<'_> {
+fn clip_line<'l>(
+    line: Line<'l>,
+    left: usize,
+    width: usize,
+    grapheme_width: Option<&GraphemeWidth>,
+) -> Line<'l> {
     // `Line::width` gives no cells to the halfwidth sound marks ﾞ and ﾟ, so count the cells
     // ratatui draws.
     let line_width: usize = line
         .spans
         .iter()
-        .flat_map(drawn_graphemes)
+        .flat_map(|span| drawn_graphemes(span, grapheme_width))
         .map(|(_, w)| w)
         .sum();
     if left == 0 && line_width <= width {
@@ -123,9 +198,9 @@ fn clip_line(line: Line<'_>, left: usize, width: usize) -> Line<'_> {
     let mut spans = Vec::with_capacity(line.spans.len());
     for span in &line.spans {
         let mut text = String::new();
-        for (grapheme, grapheme_width) in drawn_graphemes(span) {
+        for (grapheme, cells) in drawn_graphemes(span, grapheme_width) {
             let start = col;
-            col += grapheme_width;
+            col += cells;
             if left <= start && col <= right {
                 text.push_str(grapheme);
             } else if start < right && left < col {
@@ -153,7 +228,12 @@ impl<'a> TextArea<'a> {
             // edge whole and drops one cut by the right edge. Like that scroll, only left-aligned
             // text is scrolled.
             if self.alignment() == Alignment::Left {
-                spans = clip_line(spans, top_col.into(), width.into());
+                spans = clip_line(
+                    spans,
+                    top_col.into(),
+                    width.into(),
+                    self.grapheme_width.as_ref(),
+                );
             }
             lines.push(spans);
         }
@@ -180,7 +260,11 @@ impl<'a> TextArea<'a> {
         // first column. A char wider than the viewport keeps its first column in view.
         // A masked line draws the mask char, so that is the char whose width counts.
         let glyph = screen.char.map(|c| self.mask_char().unwrap_or(c));
-        let glyph_width = glyph.map_or(1, char_width).max(1) as u16;
+        let glyph_width = glyph.map_or(1, |glyph| match &self.grapheme_width {
+            Some(width) => width.of(glyph.encode_utf8(&mut [0; 4])),
+            None => char_width(glyph),
+        });
+        let glyph_width = glyph_width.max(1) as u16;
         let right = cursor + glyph_width - 1;
         next_scroll_top(next_scroll_top(prev_top, right, width), cursor, width)
     }
@@ -228,7 +312,6 @@ impl Widget for &TextArea<'_> {
         // To get fine control over the text color and the surrrounding block they have to be rendered separately
         // see https://github.com/ratatui/ratatui/issues/144
         let mut text_area = area;
-        let inner = Paragraph::new(text).alignment(self.alignment());
         if let Some(b) = self.block() {
             text_area = b.inner(area);
             b.render(area, buf)
@@ -237,7 +320,14 @@ impl Widget for &TextArea<'_> {
         // Store scroll top position for rendering on the next tick
         self.viewport.store(top_row, top_col, width, height);
 
-        inner.render(text_area, buf);
+        match &self.grapheme_width {
+            Some(grapheme_width) => {
+                draw_text(&text, text_area, buf, grapheme_width, self.alignment());
+            }
+            None => Paragraph::new(text)
+                .alignment(self.alignment())
+                .render(text_area, buf),
+        }
     }
 }
 

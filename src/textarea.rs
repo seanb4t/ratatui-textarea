@@ -6,7 +6,9 @@ use crate::screen_map::{DataLine, ScreenLine};
 use crate::scroll::Scrolling;
 #[cfg(feature = "search")]
 use crate::search::Search;
-use crate::util::{Pos, char_width, grapheme_ceil, grapheme_floor, num_digits, spaces};
+use crate::util::{
+    GraphemeWidth, Pos, char_widths, grapheme_ceil, grapheme_floor, num_digits, spaces,
+};
 use crate::widget::Viewport;
 use crate::word::{find_word_exclusive_end_forward, find_word_start_backward};
 use crate::wrap::{WrapMode, WrappedLine};
@@ -126,6 +128,7 @@ pub struct TextArea<'a> {
     pub(crate) screen_lines: RefCell<Vec<ScreenLine>>,
     pub(crate) data_pointers: RefCell<Vec<DataLine>>,
     pub(crate) area: Cell<Rect>,
+    pub(crate) grapheme_width: Option<GraphemeWidth>,
 }
 
 /// Convert any iterator whose elements can be converted into [`String`] into [`TextArea`]. Each [`String`] element is
@@ -238,6 +241,7 @@ impl<'a> TextArea<'a> {
             screen_lines: RefCell::new(Vec::new()),
             data_pointers: RefCell::new(Vec::new()),
             area: Cell::new(Rect::default()),
+            grapheme_width: None,
         };
         textarea.screen_map_load();
         textarea
@@ -1065,7 +1069,10 @@ impl<'a> TextArea<'a> {
         }
 
         let DataCursor(row, col) = self.cursor;
-        let width: usize = self.lines[row].chars().take(col).map(char_width).sum();
+        let width: usize = char_widths(&self.lines[row], self.grapheme_width.as_ref())
+            .take(col)
+            .map(|(_, cells)| cells)
+            .sum();
         let len = self.tab_len - (width % self.tab_len as usize) as u8;
         self.insert_piece(spaces(len).to_string())
     }
@@ -2388,6 +2395,32 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn alignment(&self) -> Alignment {
         self.alignment
+    }
+
+    /// Set a function that gives the width of a grapheme in cells. The cursor position, the
+    /// soft wrap and the render all use it. Each drawn grapheme takes exactly the cells that
+    /// the function gives.
+    ///
+    /// Use it when the application knows that the terminal draws a grapheme, such as an emoji
+    /// with joiners, in another width than `unicode-width` gives. Without a function, a
+    /// grapheme has the width that ratatui draws it in.
+    /// ```
+    /// use ratatui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::from(["👨\u{200d}👩\u{200d}👧x"]);
+    ///
+    /// // This terminal draws the three emoji of a family side by side.
+    /// textarea.set_grapheme_width(|grapheme| if grapheme.contains('\u{200d}') { 6 } else { 1 });
+    /// ```
+    pub fn set_grapheme_width(&mut self, width: impl Fn(&str) -> usize + Send + Sync + 'static) {
+        self.grapheme_width = Some(GraphemeWidth::new(width));
+        self.refresh_screen_map();
+    }
+
+    /// Remove the function of [`TextArea::set_grapheme_width`].
+    pub fn remove_grapheme_width(&mut self) {
+        self.grapheme_width = None;
+        self.refresh_screen_map();
     }
 
     /// Set the soft-wrap mode used when rendering text.

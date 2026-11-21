@@ -109,3 +109,16 @@ fn removed_function_gives_the_default_widths() {
     let buf = render(&textarea, area, area);
     assert_eq!(buf[(2, 0)].symbol(), "x");
 }
+
+#[test]
+fn column_after_a_grapheme_is_its_end() {
+    let mut textarea = TextArea::from([format!("a{FAMILY}"), "xxx".to_string()]);
+    textarea.set_grapheme_width(|grapheme| if grapheme == FAMILY { 2 } else { 1 });
+    let area = Rect::new(0, 0, 20, 2);
+    render(&textarea, area, area);
+    textarea.move_cursor(CursorMove::Bottom);
+    textarea.move_cursor(CursorMove::End);
+    textarea.move_cursor(CursorMove::Up);
+    let end = format!("a{FAMILY}").chars().count();
+    assert_eq!(textarea.cursor(), (0, end));
+}

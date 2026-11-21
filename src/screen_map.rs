@@ -59,10 +59,12 @@ fn char_offset_for_screen_col(text: &str, screen_col: usize, metrics: Metrics<'_
     let mut col = 0usize;
     let mut chars = 0usize;
     for (c, cells) in char_widths(text, metrics.2) {
-        if col >= screen_col {
+        let width = char_display_width(c, cells, col, metrics);
+        // A char of no cells is at the same column as the char before it, so the offset goes
+        // past it. The column after a grapheme of several chars is then the end of the grapheme.
+        if col >= screen_col && width > 0 {
             break;
         }
-        let width = char_display_width(c, cells, col, metrics);
         if col + width > screen_col {
             break;
         }

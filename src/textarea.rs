@@ -6,7 +6,7 @@ use crate::screen_map::{DataLine, ScreenLine};
 use crate::scroll::Scrolling;
 #[cfg(feature = "search")]
 use crate::search::Search;
-use crate::util::{Pos, char_width, num_digits, spaces};
+use crate::util::{Pos, char_width, grapheme_ceil, grapheme_floor, num_digits, spaces};
 use crate::widget::Viewport;
 use crate::word::{find_word_exclusive_end_forward, find_word_start_backward};
 use crate::wrap::{WrapMode, WrappedLine};
@@ -1151,6 +1151,12 @@ impl<'a> TextArea<'a> {
             return self.delete_newline();
         }
 
+        // A grapheme of more than one char goes as one piece, and one undo brings it back.
+        let start = grapheme_floor(&self.lines[row], col - 1);
+        if col - start > 1 {
+            return self.delete_piece(start, col - start);
+        }
+
         let line = &mut self.lines[row];
         if let Some((offset, c)) = line.char_indices().nth(col - 1) {
             line.remove(offset);
@@ -1580,7 +1586,16 @@ impl<'a> TextArea<'a> {
             } else {
                 self.cancel_selection();
             }
-            self.cursor = self.data_cursor(screen_cursor);
+            let DataCursor(row, col) = self.data_cursor(screen_cursor);
+            // The cursor stops only at a grapheme boundary. A move forward goes over the whole
+            // grapheme, and each other move stops before the grapheme that it lands in.
+            let line = &self.lines[row];
+            let col = if m == CursorMove::Forward {
+                grapheme_ceil(line, col)
+            } else {
+                grapheme_floor(line, col)
+            };
+            self.cursor = DataCursor(row, col);
         }
     }
 

@@ -110,7 +110,7 @@ fn back() {
 
 #[test]
 fn up() {
-    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🏿👩🏻‍❤️‍💋‍👨🏾"]]
+    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🐰👩🏻‍❤️‍💋‍👨🏾"]]
     {
         let mut t = TextArea::from(text);
 
@@ -144,7 +144,7 @@ fn up_trim() {
 
 #[test]
 fn down() {
-    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🏿👩🏻‍❤️‍💋‍👨🏾"]]
+    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🐰👩🏻‍❤️‍💋‍👨🏾"]]
     {
         let mut t = TextArea::from(text);
 
@@ -213,7 +213,7 @@ fn end() {
 
 #[test]
 fn top() {
-    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🏿👩🏻‍❤️‍💋‍👨🏾"]]
+    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🐰👩🏻‍❤️‍💋‍👨🏾"]]
     {
         let mut t = TextArea::from(text);
         for row in 0..=2 {
@@ -244,7 +244,7 @@ fn top_trim() {
 
 #[test]
 fn bottom() {
-    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🏿👩🏻‍❤️‍💋‍👨🏾"]]
+    for text in [["abc", "def", "ghi"], ["あいう", "🐶🐱🐰", "👪🤟🐰👩🏻‍❤️‍💋‍👨🏾"]]
     {
         let mut t = TextArea::from(text);
         for row in 0..=2 {

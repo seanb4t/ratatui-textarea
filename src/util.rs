@@ -1,4 +1,5 @@
 use ratatui_core::buffer::CellWidth as _;
+use unicode_segmentation::UnicodeSegmentation as _;
 
 pub fn spaces(size: u8) -> &'static str {
     const SPACES: &str = "                                                                                                                                                                                                                                                                ";
@@ -14,6 +15,33 @@ pub fn char_width(c: char) -> usize {
     } else {
         c.encode_utf8(&mut [0; 4]).cell_width().into()
     }
+}
+
+/// The char offset of the grapheme boundary of `line` at `col` or before it. A `col` past the
+/// end of the line gives the end of the line.
+pub fn grapheme_floor(line: &str, col: usize) -> usize {
+    let mut start = 0;
+    for grapheme in line.graphemes(true) {
+        let end = start + grapheme.chars().count();
+        if col < end {
+            return start;
+        }
+        start = end;
+    }
+    start
+}
+
+/// The char offset of the grapheme boundary of `line` at `col` or after it. A `col` past the
+/// end of the line gives the end of the line.
+pub fn grapheme_ceil(line: &str, col: usize) -> usize {
+    let mut end = 0;
+    for grapheme in line.graphemes(true) {
+        if col <= end {
+            return end;
+        }
+        end += grapheme.chars().count();
+    }
+    end
 }
 
 pub fn num_digits(i: usize) -> u8 {

@@ -9,7 +9,7 @@ use crate::search::Search;
 use crate::util::{Pos, char_width, num_digits, spaces};
 use crate::widget::Viewport;
 use crate::word::{find_word_exclusive_end_forward, find_word_start_backward};
-use crate::wrap::{WrapMode, WrappedLine};
+use crate::wrap::{WrapMode, WrappedLine, effective_wrap_width, wrapped_rows};
 use ratatui_core::layout::Alignment;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::{Color, Modifier, Style, Stylize};
@@ -2379,6 +2379,27 @@ impl<'a> TextArea<'a> {
     pub fn set_wrap_mode(&mut self, mode: WrapMode) {
         self.wrap_mode = mode;
         self.refresh_screen_map();
+    }
+
+    /// Get the count of the screen rows that the text takes in an area of `width` columns, with
+    /// the current soft-wrap mode. An application can size the text area to its text with it.
+    /// With [`WrapMode::None`] or a width of 0, it is the count of the lines.
+    /// ```
+    /// use ratatui_textarea::{TextArea, WrapMode};
+    ///
+    /// let mut textarea = TextArea::from(["hello world", "bye"]);
+    /// assert_eq!(textarea.wrapped_row_count(5), 2);
+    ///
+    /// textarea.set_wrap_mode(WrapMode::Word);
+    /// assert_eq!(textarea.wrapped_row_count(5), 4);
+    /// ```
+    pub fn wrapped_row_count(&self, width: u16) -> usize {
+        if self.wrap_mode == WrapMode::None || width == 0 {
+            return self.lines.len();
+        }
+        let line_number_len = self.line_number_style.map(|_| num_digits(self.lines.len()));
+        let width = effective_wrap_width(width, line_number_len);
+        wrapped_rows(&self.lines, self.wrap_mode, width, self.tab_len, self.mask).len()
     }
 
     /// Get the current soft-wrap mode.
